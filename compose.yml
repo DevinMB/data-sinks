@@ -4,24 +4,23 @@ services:
   data-sinks:
     image: alpine:latest
     container_name: data-sinks-container
-    # Optional example label, remove if not needed
     labels:
       - "promtail.scrape=true"
     restart: always
 
-    # Named volume for code or other persistent data
     volumes:
       - data_sinks_code:/app
 
-    # Example environment variables: adjust to your actual needs
     environment:
-      - RELEASE_VERSION=0.0.1  # Tag name on your GitHub repo
-      - KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-      - KAFKA_TOPIC=whisper-topic
-      - GROUP_ID=whisper-sink
-      - COUCHDB_URL=http://${USER_NAME}:${PASSWORD}@couchdb:5984
-      - DB_NAME=whispers
-
+      - USER_NAME=${USER_NAME}
+      - PASSWORD=${PASSWORD}
+      - GROUP_ID=${GROUP_ID}
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+      - KAFKA_BOOTSTRAP_SERVERS=${KAFKA_BOOTSTRAP_SERVERS}
+      - COUCHDB_IP=${COUCHDB_IP}
+      - DB_NAME=${DB_NAME}
+      - RELEASE_VERSION=${RELEASE_VERSION}
+      
     networks:
       - default
 
@@ -44,13 +43,12 @@ services:
         echo 'No requirements.txt found, skipping installation';
       fi
 
-      # 4. Run your Python script
-      python3 /app/data-sinks-v${RELEASE_VERSION}/consumer_couchdb.py;
+      # 4. Run Python script
+      python3 /app/data-sinks-v${RELEASE_VERSION}/couchdb-sink.py;
 
       # 5. Keep container running
       tail -f /dev/null
       "
-
 networks:
   default:
     driver: bridge
