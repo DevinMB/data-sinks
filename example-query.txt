@@ -1,0 +1,13 @@
+{
+  "selector": {
+    "_id": {
+      "$gt": null
+    },
+    "origin": "X"
+  },
+  "sort": [
+    {
+      "timestamp": "desc"
+    }
+  ]
+}

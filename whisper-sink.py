@@ -3,19 +3,25 @@ import time
 from kafka import KafkaConsumer
 import couchdb
 import os
+from dotenv import load_dotenv
+import urllib.parse
+
+
+load_dotenv()
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")  
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC")
 GROUP_ID = os.getenv("GROUP_ID")
 
-COUCHDB_IP=os.getenv("COUCHDB_URL")
+COUCHDB_IP=os.getenv("COUCHDB_IP")
 USER_NAME = os.getenv("USER_NAME")
 PASSWORD = os.getenv("PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
 
 def main():
 
-    couchdb_url = f'http://{USER_NAME}:{PASSWORD}@{COUCHDB_IP}:5984'
+    quoted_password = urllib.parse.quote(PASSWORD)
+    couchdb_url = f'http://{USER_NAME}:{quoted_password}@{COUCHDB_IP}:5984'
     
     print(couchdb_url)
 
@@ -44,6 +50,11 @@ def main():
         for message in consumer:
     
             doc = message.value
+
+            if message.key:
+                doc["origin"] = message.key.decode("utf-8")
+            else:
+                doc["origin"] = None
     
             db.save(doc)
 
