@@ -52,9 +52,9 @@ def main():
             doc = message.value
 
             if message.key:
-                doc["origin"] = message.key.decode("utf-8")
+                doc["kafka-key"] = message.key.decode("utf-8")
             else:
-                doc["origin"] = None
+                doc["kafka-key"] = None
     
             db.save(doc)
 
