@@ -32,8 +32,7 @@ services:
       # 2. Download code if it does not exist locally
       if [ ! -d /app/data-sinks-v${RELEASE_VERSION} ]; then
         mkdir -p /app/data-sinks-v${RELEASE_VERSION} && \
-        curl -L https://github.com/DevinMB/data-sinks/archive/refs/tags/v${RELEASE_VERSION}.tar.gz \
-        | tar xz --strip-components=1 -C /app/data-sinks-v${RELEASE_VERSION};
+        curl -L https://github.com/DevinMB/data-sinks/archive/refs/tags/v${RELEASE_VERSION}.tar.gz | tar xz --strip-components=1 -C /app/data-sinks-v${RELEASE_VERSION};
       fi
 
       # 3. Install Python dependencies
