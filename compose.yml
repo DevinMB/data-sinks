@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  data-sinks:
+    image: alpine:latest
+    container_name: data-sinks-container
+    # Optional example label, remove if not needed
+    labels:
+      - "promtail.scrape=true"
+    restart: always
+
+    # Named volume for code or other persistent data
+    volumes:
+      - data_sinks_code:/app
+
+    # Example environment variables: adjust to your actual needs
+    environment:
+      - RELEASE_VERSION=0.0.1  # Tag name on your GitHub repo
+      - KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+      - KAFKA_TOPIC=whisper-topic
+      - GROUP_ID=whisper-sink
+      - COUCHDB_URL=http://${USER_NAME}:${PASSWORD}@couchdb:5984
+      - DB_NAME=whispers
+
+    networks:
+      - default
+
+    entrypoint: |
+      /bin/sh -c "
+      # 1. Install Python 3 & basic tools
+      apk add --no-cache python3 py3-pip tar curl;
+
+      # 2. Download code if it does not exist locally
+      if [ ! -d /app/data-sinks-v${RELEASE_VERSION} ]; then
+        mkdir -p /app/data-sinks-v${RELEASE_VERSION} && \
+        curl -L https://github.com/DevinMB/data-sinks/archive/refs/tags/v${RELEASE_VERSION}.tar.gz \
+        | tar xz --strip-components=1 -C /app/data-sinks-v${RELEASE_VERSION};
+      fi
+
+      # 3. Install Python dependencies
+      if [ -f /app/data-sinks-v${RELEASE_VERSION}/requirements.txt ]; then
+        pip3 install -r /app/data-sinks-v${RELEASE_VERSION}/requirements.txt --break-system-packages;
+      else
+        echo 'No requirements.txt found, skipping installation';
+      fi
+
+      # 4. Run your Python script
+      python3 /app/data-sinks-v${RELEASE_VERSION}/consumer_couchdb.py;
+
+      # 5. Keep container running
+      tail -f /dev/null
+      "
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  data_sinks_code:
