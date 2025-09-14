@@ -20,6 +20,8 @@ services:
       - COUCHDB_IP=${COUCHDB_IP}
       - DB_NAME=${DB_NAME}
       - RELEASE_VERSION=${RELEASE_VERSION}
+      - AUTO_OFFSET_RESET=${AUTO_OFFSET_RESET}
+      - KEY_FILTER=${KEY_FILTER}
       
     networks:
       - default
