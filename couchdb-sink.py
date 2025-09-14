@@ -19,6 +19,8 @@ COUCHDB_IP=os.getenv("COUCHDB_IP")
 USER_NAME = os.getenv("USER_NAME")
 PASSWORD = os.getenv("PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
+AUTO_OFFSET_RESET = os.getenv("AUTO_OFFSET_RESET")
+KEY_FILTER = os.getenv("KEY_FILTER")
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -51,7 +53,7 @@ def main():
             KAFKA_TOPIC,
             bootstrap_servers=[KAFKA_BOOTSTRAP_SERVERS],
             group_id=APP_NAME,
-            auto_offset_reset='earliest',
+            auto_offset_reset=AUTO_OFFSET_RESET,
             enable_auto_commit=True,
             value_deserializer=lambda m: json.loads(m.decode('utf-8'))
         )
@@ -62,20 +64,25 @@ def main():
 
     try:
         for message in consumer:
-    
-            doc = message.value
 
-            if message.key:
-                doc["kafka-key"] = message.key.decode("utf-8")
+            key_str = message.key.decode("utf-8") if message.key else None
+            doc = message.value
+            doc["kafka-key"] = key_str
+
+            if KEY_FILTER and KEY_FILTER.strip():
+                try:
+                    db.save(doc)
+                    logging.info(f"Saved to CouchDB: {doc}")
+                except Exception as e:
+                    logging.error("Failed to save document to CouchDB.", exc_info=True)
+                    continue
             else:
-                doc["kafka-key"] = None
-    
-            try:
-                db.save(doc)
-                logging.info(f"Saved to CouchDB: {doc}")
-            except Exception as e:
-                logging.error("Failed to save document to CouchDB.", exc_info=True)
-                continue
+                try:
+                    db.save(doc)
+                    logging.info(f"Saved to CouchDB: {doc}")
+                except Exception as e:
+                    logging.error("Failed to save document to CouchDB.", exc_info=True)
+                    continue
 
     except KeyboardInterrupt:
         logging.info("Shutting down consumer...")
