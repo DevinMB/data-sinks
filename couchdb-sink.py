@@ -70,12 +70,18 @@ def main():
             doc["kafka-key"] = key_str
 
             if KEY_FILTER and KEY_FILTER.strip():
-                try:
-                    db.save(doc)
-                    logging.info(f"Saved to CouchDB: {doc}")
-                except Exception as e:
-                    logging.error("Failed to save document to CouchDB.", exc_info=True)
+                if key_str == KEY_FILTER:
+                    try:
+                        db.save(doc)
+                        logging.info(f"Saved to CouchDB: {doc}")
+                    except Exception as e:
+                        logging.error("Failed to save document to CouchDB.", exc_info=True)
+                        continue
+                else: 
+                    logging.info(f"Key ({key_str}) does not match filter: {KEY_FILTER}")
                     continue
+                
+                
             else:
                 try:
                     db.save(doc)
