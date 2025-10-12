@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import urllib.parse
 import logging
 import sys
+import re
 
 
 load_dotenv()
@@ -15,12 +16,12 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC")
 APP_NAME = os.getenv("APP_NAME")
 
-COUCHDB_IP=os.getenv("COUCHDB_IP")
+COUCHDB_IP = os.getenv("COUCHDB_IP")
 USER_NAME = os.getenv("USER_NAME")
 PASSWORD = os.getenv("PASSWORD")
 DB_NAME = os.getenv("DB_NAME")
-AUTO_OFFSET_RESET = os.getenv("AUTO_OFFSET_RESET")
-KEY_FILTER = os.getenv("KEY_FILTER")
+AUTO_OFFSET_RESET = os.getenv("AUTO_OFFSET_RESET", "latest")
+KEY_FILTER = os.getenv("KEY_FILTER", "").strip()  # can be a regex pattern like ^sensor\..*_weights$
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -29,8 +30,8 @@ logging.basicConfig(
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
 
-def main():
 
+def main():
     quoted_password = urllib.parse.quote(PASSWORD)
     couchdb_url = f'http://{USER_NAME}:{quoted_password}@{COUCHDB_IP}:5984'
 
@@ -60,42 +61,43 @@ def main():
     except Exception as e:
         logging.error("Failed to create Kafka consumer.", exc_info=True)
         sys.exit(1)
-    logging.info("Consumer is running. Listening for messages...")
+
+    logging.info(f"Consumer is running. Listening for messages... KEY_FILTER='{KEY_FILTER or '[none]'}'")
+
+    regex_filter = None
+    if KEY_FILTER:
+        try:
+            regex_filter = re.compile(KEY_FILTER)
+        except re.error as e:
+            logging.error(f"Invalid regex in KEY_FILTER: {e}")
+            sys.exit(1)
 
     try:
         for message in consumer:
-
             key_str = message.key.decode("utf-8") if message.key else None
             doc = message.value
             doc["kafka-key"] = key_str
 
-            if KEY_FILTER and KEY_FILTER.strip():
-                if key_str == KEY_FILTER:
-                    try:
-                        db.save(doc)
-                        logging.info(f"Saved to CouchDB: {doc}")
-                    except Exception as e:
-                        logging.error("Failed to save document to CouchDB.", exc_info=True)
-                        continue
-                else: 
-                    logging.info(f"Key ({key_str}) does not match filter: {KEY_FILTER}")
-                    continue
-                
-                
-            else:
+            # Match by regex if provided
+            if regex_filter is None or (key_str and regex_filter.search(key_str)):
                 try:
                     db.save(doc)
                     logging.info(f"Saved to CouchDB: {doc}")
                 except Exception as e:
                     logging.error("Failed to save document to CouchDB.", exc_info=True)
                     continue
+            else:
+                logging.info(f"Key ({key_str}) did not match regex filter: {KEY_FILTER}")
+                continue
 
     except KeyboardInterrupt:
         logging.info("Shutting down consumer...")
     except Exception as e:
         logging.error("An unexpected error occurred while consuming messages.", exc_info=True)
     finally:
-        consumer.close()
+        if consumer:
+            consumer.close()
+
 
 if __name__ == "__main__":
     main()
