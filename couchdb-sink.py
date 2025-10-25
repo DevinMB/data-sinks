@@ -11,16 +11,29 @@ import re
 
 load_dotenv()
 
+# ---------------- Env ----------------
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
 KAFKA_TOPIC             = os.getenv("KAFKA_TOPIC")
-APP_NAME                = os.getenv("APP_NAME")
+APP_NAME                = os.getenv("APP_NAME", "kafka-to-couch-sink")
 
 COUCHDB_IP = os.getenv("COUCHDB_IP")
 USER_NAME  = os.getenv("USER_NAME")
 PASSWORD   = os.getenv("PASSWORD")
 DB_NAME    = os.getenv("DB_NAME")
+
 AUTO_OFFSET_RESET = os.getenv("AUTO_OFFSET_RESET", "latest")
-KEY_FILTER = os.getenv("KEY_FILTER", "").strip()  # regex for Kafka record keys
+KEY_FILTER        = os.getenv("KEY_FILTER", "").strip()  # regex for Kafka record keys
+
+# --- NEW: CouchDB _id strategy ---
+#   auto            -> let CouchDB generate _id (no upsert)
+#   kafka_key       -> _id = Kafka record key
+#   timestamp       -> _id = int(timestamp)
+#   timestamp_chat  -> _id = f"{int(timestamp)}:{chat_id}"
+#   field           -> _id = doc[COUCHDB_ID_FIELD]
+#   custom          -> _id formatted from COUCHDB_ID_TEMPLATE (supports {chat_id}, {int_ts}, {ts}, {key})
+COUCHDB_ID_MODE      = os.getenv("COUCHDB_ID_MODE", "kafka_key").strip().lower()
+COUCHDB_ID_FIELD     = os.getenv("COUCHDB_ID_FIELD", "").strip()
+COUCHDB_ID_TEMPLATE  = os.getenv("COUCHDB_ID_TEMPLATE", "{int_ts}:{chat_id}").strip()
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -29,53 +42,92 @@ logging.basicConfig(
     datefmt='%Y-%m-%dT%H:%M:%S'
 )
 
-def make_doc_id_from_msg(key_str, doc):
-    """
-    Prefer the Kafka key as the CouchDB _id (stable for replays).
-    Fallback: use timestamp (int seconds) + chat_id to reduce collisions.
-    """
-    if key_str:
-        return key_str  # you’re setting this to the timestamp in your enricher
-    ts = doc.get("timestamp")
-    chat_id = doc.get("chat_id", "unknown")
+def int_ts(ts):
+    """Safely coerce to int seconds; return None on failure."""
     if ts is None:
-        # final fallback: time-based unique id (won’t upsert deterministically)
-        return f"fallback:{chat_id}:{int(time.time()*1e6)}"
+        return None
     try:
-        # Use int seconds to match your enricher’s output-key; include chat_id to avoid cross-chat collisions
-        return f"{int(float(ts))}:{chat_id}"
+        return int(float(ts))
     except Exception:
-        return f"badts:{chat_id}:{int(time.time()*1e6)}"
+        return None
+
+def compute_doc_id(mode, key_str, doc):
+    """
+    Compute a deterministic CouchDB _id based on COUCHDB_ID_MODE.
+    Return (doc_id:str | None, reason:str).
+    If None is returned, caller should treat as 'auto' (no upsert).
+    """
+    its = int_ts(doc.get("timestamp"))
+    chat_id = doc.get("chat_id", "unknown")
+
+    if mode == "auto":
+        return None, "auto"
+
+    if mode == "kafka_key":
+        if key_str:
+            return key_str, "kafka_key"
+        return None, "kafka_key:missing"
+
+    if mode == "timestamp":
+        if its is not None:
+            return str(its), "timestamp"
+        return None, "timestamp:missing"
+
+    if mode == "timestamp_chat":
+        if its is not None:
+            return f"{its}:{chat_id}", "timestamp_chat"
+        return None, "timestamp_chat:missing_ts"
+
+    if mode == "field":
+        if COUCHDB_ID_FIELD:
+            val = doc.get(COUCHDB_ID_FIELD)
+            if val is not None and str(val).strip() != "":
+                return str(val), f"field:{COUCHDB_ID_FIELD}"
+            return None, f"field:{COUCHDB_ID_FIELD}:missing"
+        return None, "field:no_field_specified"
+
+    if mode == "custom":
+        # supported tokens: {chat_id}, {int_ts}, {ts}, {key}
+        try:
+            rendered = COUCHDB_ID_TEMPLATE.format(
+                chat_id=chat_id,
+                int_ts=its if its is not None else "",
+                ts=doc.get("timestamp", ""),
+                key=key_str or "",
+            )
+            rendered = str(rendered).strip()
+            if rendered:
+                return rendered, "custom"
+            return None, "custom:empty_render"
+        except Exception as e:
+            logging.error(f"Failed to render COUCHDB_ID_TEMPLATE: {e}")
+            return None, "custom:render_error"
+
+    # Unknown mode -> behave like auto but warn
+    logging.warning(f"Unknown COUCHDB_ID_MODE='{mode}', defaulting to auto for this message.")
+    return None, "unknown_mode"
 
 def upsert_doc(db, doc_id, content, max_retries=5):
     """
     Upsert into CouchDB:
-    - Try to create with _id = doc_id
-    - If conflict, fetch existing _rev and resave
-    - Retry a few times if racing
+    - If doc exists, fetch _rev and save.
+    - If conflict, retry with backoff.
     """
     attempt = 0
     while True:
         attempt += 1
         try:
-            # If exists, get _rev
-            try:
-                existing = db.get(doc_id)
-            except Exception:
-                existing = None
-
+            existing = db.get(doc_id)
             payload = dict(content)
             payload["_id"] = doc_id
             if existing and "_rev" in existing:
                 payload["_rev"] = existing["_rev"]
-
             db.save(payload)
             return True
         except couchdb.http.ResourceConflict:
             if attempt >= max_retries:
                 logging.error(f"Conflict upserting _id={doc_id}; max retries reached")
                 return False
-            # small backoff, then try again (fetch new _rev)
             time.sleep(0.1 * attempt)
             continue
         except Exception as e:
@@ -83,6 +135,7 @@ def upsert_doc(db, doc_id, content, max_retries=5):
             return False
 
 def main():
+    # ---- CouchDB connection ----
     quoted_password = urllib.parse.quote(PASSWORD or "")
     couchdb_url = f'http://{USER_NAME}:{quoted_password}@{COUCHDB_IP}:5984'
 
@@ -98,7 +151,7 @@ def main():
 
     db = couch[DB_NAME]
 
-    # Compile optional key regex
+    # ---- Optional Kafka key regex filter ----
     regex_filter = None
     if KEY_FILTER:
         try:
@@ -107,6 +160,7 @@ def main():
             logging.error(f"Invalid regex in KEY_FILTER: {e}")
             sys.exit(1)
 
+    # ---- Kafka consumer ----
     try:
         consumer = KafkaConsumer(
             KAFKA_TOPIC,
@@ -116,7 +170,6 @@ def main():
             enable_auto_commit=True,
             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
             key_deserializer=lambda k: k.decode('utf-8') if k else None,
-            # optional tuning:
             max_poll_records=200,
             request_timeout_ms=40000,
             session_timeout_ms=15000,
@@ -126,11 +179,17 @@ def main():
         logging.error("Failed to create Kafka consumer.", exc_info=True)
         sys.exit(1)
 
-    logging.info(f"Consumer is running. Listening for messages... KEY_FILTER='{KEY_FILTER or '[none]'}'")
+    logging.info(
+        f"Consumer is running. KEY_FILTER='{KEY_FILTER or '[none]'}', "
+        f"COUCHDB_ID_MODE='{COUCHDB_ID_MODE}', "
+        f"COUCHDB_ID_FIELD='{COUCHDB_ID_FIELD or '[none]'}', "
+        f"COUCHDB_ID_TEMPLATE='{COUCHDB_ID_TEMPLATE if COUCHDB_ID_MODE=='custom' else '[n/a]'}'"
+    )
 
+    # ---- Main consume loop ----
     try:
         for message in consumer:
-            key_str = message.key  # already deserialized to str (or None)
+            key_str = message.key
             doc = message.value
 
             # Filter by Kafka record key if regex provided
@@ -138,18 +197,27 @@ def main():
                 logging.info(f"Key ({key_str}) did not match regex filter: {KEY_FILTER}")
                 continue
 
-            # Preserve the Kafka key in the document (optional)
+            # Always keep the Kafka key for traceability
             doc["kafka-key"] = key_str
 
-            # Determine deterministic CouchDB _id
-            doc_id = make_doc_id_from_msg(key_str, doc)
+            # Compute _id according to mode
+            doc_id, reason = compute_doc_id(COUCHDB_ID_MODE, key_str, doc)
 
-            # Upsert (create or update with latest enrichment)
+            if doc_id is None:
+                # AUTO mode or failed to compute deterministic id -> plain save (no upsert)
+                try:
+                    db.save(doc)
+                    logging.info(f"Saved (auto-id) reason={reason}")
+                except Exception:
+                    logging.error("Failed to save document to CouchDB (auto-id).", exc_info=True)
+                continue
+
+            # Deterministic id -> upsert
             ok = upsert_doc(db, doc_id, doc)
             if ok:
-                logging.info(f"Upserted _id={doc_id}")
+                logging.info(f"Upserted _id={doc_id} (mode={reason})")
             else:
-                logging.error(f"Failed to upsert _id={doc_id}")
+                logging.error(f"Failed to upsert _id={doc_id} (mode={reason})")
 
     except KeyboardInterrupt:
         logging.info("Shutting down consumer...")
