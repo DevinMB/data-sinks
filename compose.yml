@@ -22,6 +22,8 @@ services:
       - RELEASE_VERSION=${RELEASE_VERSION}
       - AUTO_OFFSET_RESET=${AUTO_OFFSET_RESET}
       - KEY_FILTER=${KEY_FILTER}
+      - COUCHDB_ID_MODE=${COUCHDB_ID_MODE}
+      - COUCHDB_ID_TEMPLATE=${COUCHDB_ID_TEMPLATE}
       
     networks:
       - default

@@ -163,7 +163,7 @@ def compute_doc_id(mode, key_str, doc):
         try:
             rendered = _DocFormatter(doc, builtins).format(COUCHDB_ID_TEMPLATE)
             rendered = sanitize_id_segment(rendered).strip()
-            if rendered and rendered not in (":", "::"):
+            if rendered and not rendered.startswith(":") and rendered not in (":", "::"):
                 return rendered, "custom"
             return None, "custom:empty_render"
         except Exception as e:
