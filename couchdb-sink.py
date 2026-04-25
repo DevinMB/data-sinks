@@ -8,8 +8,6 @@ import urllib.parse
 import logging
 import sys
 import re
-import string
-
 load_dotenv()
 
 # ---------------- Env ----------------
@@ -82,36 +80,6 @@ def sanitize_id_segment(value):
     return str(value).replace("/", "_")
 
 
-class _DocFormatter(string.Formatter):
-    """
-    Custom Formatter that allows {doc.foo.bar.baz} to traverse nested dict paths
-    in the message document. Unknown tokens render as empty strings rather than
-    raising KeyError, matching the previous best-effort behavior.
-    """
-
-    def __init__(self, doc, builtins):
-        super().__init__()
-        self._doc = doc
-        self._builtins = builtins
-
-    def get_field(self, field_name, args, kwargs):
-        # Built-in flat tokens win first
-        if field_name in self._builtins:
-            return self._builtins[field_name], field_name
-
-        # {doc.x.y} -> nested traversal
-        if field_name.startswith("doc."):
-            return get_nested(self._doc, field_name[4:]), field_name
-
-        # Plain top-level field on the doc
-        val = self._doc.get(field_name) if isinstance(self._doc, dict) else None
-        return val, field_name
-
-    def format_field(self, value, format_spec):
-        if value is None:
-            return ""
-        return format(value, format_spec)
-
 
 def compute_doc_id(mode, key_str, doc):
     """
@@ -161,7 +129,7 @@ def compute_doc_id(mode, key_str, doc):
             "entity_id": doc.get("entity_id", ""),
         }
         try:
-            rendered = _DocFormatter(doc, builtins).format(COUCHDB_ID_TEMPLATE)
+            rendered = COUCHDB_ID_TEMPLATE.format(**builtins)
             rendered = sanitize_id_segment(rendered).strip()
             if rendered and not rendered.startswith(":") and rendered not in (":", "::"):
                 return rendered, "custom"
